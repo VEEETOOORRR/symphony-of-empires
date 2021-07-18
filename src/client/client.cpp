@@ -227,6 +227,7 @@ static void industry_view_nation(UI::Widget&, void *) {
 extern void ui_treaty(void);
 
 std::vector<const Texture*> nation_flags;
+std::vector<const Texture*> outpost_type_icons;
 
 const Texture& get_nation_flag(Nation& nation) {
 	return *nation_flags[g_world->get_id(&nation)];
@@ -313,7 +314,7 @@ static void play_nation(UI::Widget&, void *) {
 
 	// Select the nation
 	g_client->packet_mutex.lock();
-	Packet packet = Packet(g_client->get_fd());
+	Packet packet = Packet();
 	Archive ar = Archive();
 	enum ActionType action = ACTION_SELECT_NATION;
 	::serialize(ar, &action);
@@ -465,6 +466,8 @@ void colonize_province(UI::Widget& w, void* data) {
 	curr_nation->budget -= 10000;
 }
 
+extern void ui_build_unit(Outpost* outpost);
+
 std::vector<Event> displayed_events;
 void select_nation(void) {
 	g_world->client_update = &client_update;
@@ -489,6 +492,13 @@ void select_nation(void) {
 		std::string pt;
 		pt = "ui/flags/" + nation->ref_name + "_monarchy.png";
 		nation_flags.push_back(&g_texture_manager->load_texture(Path::get(pt.c_str())));
+	}
+
+	outpost_type_icons.reserve(g_world->nations.size());
+	for(const auto& outpost_type: g_world->outpost_types) {
+		std::string pt;
+		pt = "ui/icons/outpost_types/" + outpost_type->ref_name + ".png";
+		outpost_type_icons.push_back(&g_texture_manager->load_texture(Path::get(pt.c_str())));
 	}
 	
 	cam.x = -100.f;
@@ -534,6 +544,7 @@ void select_nation(void) {
 	play_btn->on_click = &play_nation;
 	
 	Unit* selected_unit = nullptr;
+	Outpost* selected_outpost = nullptr;
 	
 	size_t last_inbox_size = 0;
 	uint64_t last_time = 0;
@@ -573,6 +584,7 @@ void select_nation(void) {
 					case MAP_MODE_NORMAL:
 						// See untis that have been clicked on
 						if(event.button.button == SDL_BUTTON_LEFT) {
+							// Check if we selected an unit
 							selected_unit = nullptr;
 							for(const auto& unit: g_world->units) {
 								const float size = 2.f;
@@ -584,36 +596,50 @@ void select_nation(void) {
 									break;
 								}
 							}
-
-							if(selected_unit != nullptr) {
+							if(selected_unit != nullptr)
 								break;
+
+							// Check if we selected an outpost
+							selected_outpost = nullptr;
+							for(const auto& outpost: g_world->outposts) {
+								const float size = 2.f;
+								if((int)select_pos.first > (int)outpost->x - size
+								&& (int)select_pos.first < (int)outpost->x + size
+								&& (int)select_pos.second > (int)outpost->y - size
+								&& (int)select_pos.second < (int)outpost->y + size) {
+									selected_outpost = outpost;
+									break;
+								}
 							}
+							if(selected_outpost != nullptr)
+								break;
 							
-							// Send broadcast to server
+							// Tell the server about an action for building an outpost
 							g_client->packet_mutex.lock();
-							Packet packet = Packet(g_client->get_fd());
+							Packet packet = Packet();
 							Archive ar = Archive();
-							enum ActionType action = ACTION_UNIT_ADD;
+							enum ActionType action = ACTION_OUTPOST_ADD;
 							::serialize(ar, &action);
-							Unit unit = Unit();
-							unit.owner = g_world->nations[curr_selected_nation];
-							unit.x = select_pos.first;
-							unit.y = select_pos.second;
-							unit.tx = unit.x;
-							unit.ty = unit.y;
-							unit.type = g_world->unit_types[0];
-							unit.size = unit.type->max_health;
-							::serialize(ar, &unit);
+							Outpost outpost = Outpost();
+							outpost.type = g_world->outpost_types[0];
+							outpost.x = select_pos.first;
+							outpost.y = select_pos.second;
+							outpost.working_unit_type = nullptr;
+							outpost.working_boat_type = nullptr;
+							outpost.req_goods = outpost.type->req_goods;
+							outpost.owner = g_world->nations[curr_selected_nation];
+							::serialize(ar, &outpost); // OutpostObj
 							packet.data(ar.get_buffer(), ar.size());
 							g_client->packet_queue.push_back(packet);
 							g_client->packet_mutex.unlock();
+							break;
 						} else if(event.button.button == SDL_BUTTON_RIGHT) {
 							if(selected_unit != nullptr) {
 								selected_unit->tx = select_pos.first;
 								selected_unit->ty = select_pos.second;
 								
 								g_client->packet_mutex.lock();
-								Packet packet = Packet(g_client->get_fd());
+								Packet packet = Packet();
 								Archive ar = Archive();
 								enum ActionType action = ACTION_UNIT_CHANGE_TARGET;
 								::serialize(ar, &action);
@@ -621,6 +647,27 @@ void select_nation(void) {
 								::serialize(ar, &unit_id);
 								::serialize(ar, &selected_unit->tx);
 								::serialize(ar, &selected_unit->ty);
+								packet.data(ar.get_buffer(), ar.size());
+								g_client->packet_queue.push_back(packet);
+								g_client->packet_mutex.unlock();
+								break;
+							} else if(selected_outpost != nullptr) {
+								ui_build_unit(selected_outpost);
+							} else {
+								g_client->packet_mutex.lock();
+								Packet packet = Packet();
+								Archive ar = Archive();
+								enum ActionType action = ACTION_UNIT_ADD;
+								::serialize(ar, &action);
+								Unit unit = Unit();
+								unit.type = g_world->unit_types[0];
+								unit.x = select_pos.first;
+								unit.y = select_pos.second;
+								unit.tx = unit.x;
+								unit.ty = unit.y;
+								unit.owner = g_world->nations[curr_selected_nation];
+								unit.size = unit.type->max_health;
+								::serialize(ar, &unit);
 								packet.data(ar.get_buffer(), ar.size());
 								g_client->packet_queue.push_back(packet);
 								g_client->packet_mutex.unlock();
@@ -919,8 +966,6 @@ void select_nation(void) {
 		g_world->units_mutex.lock();
 		for(const auto& unit: g_world->units) {
 			const float size = 1.f;
-			NationId nation_id = g_world->get_id(unit->owner);
-			
 			if(unit->size) {
 				glBegin(GL_QUADS);
 				glColor3f(0.f, 1.f, 0.f);
@@ -932,7 +977,7 @@ void select_nation(void) {
 				glEnd();
 			}
 			
-			glBindTexture(GL_TEXTURE_2D, nation_flags[nation_id]->gl_tex_num);
+			glBindTexture(GL_TEXTURE_2D, nation_flags[g_world->get_id(unit->owner)]->gl_tex_num);
 			glBegin(GL_QUADS);
 			glColor4f(1.f, 1.f, 1.f, 0.8f);
 			glTexCoord2f(0.f, 0.f);
@@ -946,6 +991,37 @@ void select_nation(void) {
 			glEnd();
 		}
 		g_world->units_mutex.unlock();
+
+		g_world->outposts_mutex.lock();
+		for(const auto& outpost: g_world->outposts) {
+			glBindTexture(GL_TEXTURE_2D, nation_flags[g_world->get_id(outpost->owner)]->gl_tex_num);
+			glBegin(GL_QUADS);
+			glColor4f(1.f, 1.f, 1.f, 0.8f);
+			glTexCoord2f(0.f, 0.f);
+			glVertex2f(outpost->x, outpost->y);
+			glTexCoord2f(1.f, 0.f);
+			glVertex2f(outpost->x + 0.2f, outpost->y);
+			glTexCoord2f(1.f, 1.f);
+			glVertex2f(outpost->x + 0.2f, outpost->y + 0.2f);
+			glTexCoord2f(0.f, 1.f);
+			glVertex2f(outpost->x, outpost->y + 0.2f);
+			glEnd();
+
+			const float size = 1.f;
+			glBindTexture(GL_TEXTURE_2D, outpost_type_icons[g_world->get_id(outpost->type)]->gl_tex_num);
+			glBegin(GL_QUADS);
+			glColor4f(1.f, 1.f, 1.f, 0.8f);
+			glTexCoord2f(0.f, 0.f);
+			glVertex2f(outpost->x, outpost->y);
+			glTexCoord2f(1.f, 0.f);
+			glVertex2f(outpost->x + size, outpost->y);
+			glTexCoord2f(1.f, 1.f);
+			glVertex2f(outpost->x + size, outpost->y + size);
+			glTexCoord2f(0.f, 1.f);
+			glVertex2f(outpost->x, outpost->y + size);
+			glEnd();
+		}
+		g_world->outposts_mutex.unlock();
 		glBindTexture(GL_TEXTURE_2D, 0);
 
 		if(selected_unit != nullptr) {

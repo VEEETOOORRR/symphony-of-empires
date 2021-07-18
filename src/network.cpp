@@ -17,6 +17,8 @@
 #include "network.hpp"
 #include "print.hpp"
 
+#include <poll.h>
+
 Server* g_server = nullptr;
 
 Server::Server(const unsigned port, const unsigned max_conn) {
@@ -27,23 +29,20 @@ Server::Server(const unsigned port, const unsigned max_conn) {
 	WSAStartup(MAKEWORD(2, 2), &data);
 #endif
 
-	struct addrinfo * result = NULL;
-	fd = socket(AF_INET, SOCK_STREAM, 0);
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	addr.sin_port = htons(port);
+
+	fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if(fd == INVALID_SOCKET) {
-		print_error("Cannot create server socket");
 #ifdef windows
 		WSACleanup();
 #endif
 		throw std::runtime_error("Cannot create server socket");
 	}
 
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	addr.sin_port = htons(port);
-
 	if(bind(fd, (sockaddr *)&addr, sizeof(addr)) != 0) {
-		print_error("Cannot bind server on port %u", port);
 #if defined windows
 		print_error("WSA code: %u", WSAGetLastError());
 		WSACleanup();
@@ -52,12 +51,11 @@ Server::Server(const unsigned port, const unsigned max_conn) {
 	}
 
 	if(listen(fd, max_conn) != 0) {
-		print_error("Cannot listen on %u connections", max_conn);
 #if defined windows
 		print_error("WSA code: %u", WSAGetLastError());
 		WSACleanup();
 #endif
-		return;
+		throw std::runtime_error("Cannot listen in specified number of concurrent connections");
 	}
 
 	print_info("Deploying %u threads for clients", max_conn);
@@ -74,7 +72,7 @@ Server::Server(const unsigned port, const unsigned max_conn) {
 }
 
 Server::~Server() {
-	run = false;
+	run = true;
 	for(auto& thread: threads) {
 		thread.join();
 	}
@@ -105,6 +103,7 @@ void Server::broadcast(Packet& packet) {
 	}
 }
 
+#include <sys/ioctl.h>
 /** This is the handling thread-function for handling a connection to a single client
  * Sending packets will only be received by the other end, when trying to broadcast please
  * put the packets on the send queue, they will be sent accordingly
@@ -117,7 +116,7 @@ void Server::net_loop(int id) {
 			int conn_fd;
 
 			conn_fd = accept(fd, (sockaddr *)&client, &len);
-			if(conn_fd < 0) {
+			if(conn_fd == INVALID_SOCKET) {
 				throw "Cannot accept client connection";
 			}
 
@@ -141,17 +140,20 @@ void Server::net_loop(int id) {
 			packet.send(&action);
 			print_info("Sent action %zu", (size_t)action);
 
+			int has_pending;
+			//struct pollfd pfd;
+			//pfd.fd = conn_fd;
+			//pfd.events = POLLIN;
+
 			while(run) {
-				int has_pending = 1;
-				
 				// Read the messages if there is any pending bytes on the tx
-				while(has_pending) {
-					memset(&time_out, 0, sizeof(time_out));
-					has_pending = select(conn_fd, &fdset, NULL, NULL, &time_out);
-					if(!has_pending) {
-						break;
-					}
-					
+				//poll(&pfd, 1, -1);
+				//if(pfd.revents & POLLIN) {
+				has_pending = 0;
+				ioctl(conn_fd, FIONREAD, &has_pending);
+				if(has_pending) {
+					print_info("Network: receiving packet");
+
 					packet.recv();
 					
 					ar.set_buffer(packet.data(), packet.size());
@@ -165,9 +167,6 @@ void Server::net_loop(int id) {
 						print_info("Received pong, responding with ping!");
 						break;
 					case ACTION_UNIT_CHANGE_TARGET:
-						if(selected_nation == nullptr)
-							break;
-						
 						{
 							UnitId unit_id;
 							::deserialize(ar, &unit_id);
@@ -179,7 +178,7 @@ void Server::net_loop(int id) {
 							print_info("Unit %zu changes targets to %zu.%zu", (size_t)unit_id, (size_t)unit->tx, (size_t)unit->ty);
 						}
 						break;
-					case ACTION_UNIT_ADD:
+					/*case ACTION_UNIT_ADD:
 						if(selected_nation == nullptr)
 							break;
 						
@@ -187,10 +186,50 @@ void Server::net_loop(int id) {
 						{
 							Unit* unit = new Unit();
 							::deserialize(ar, unit);
+							unit->owner = selected_nation;
 							g_world->units.push_back(unit);
 							print_info("New unit of %s", unit->owner->name.c_str());
 						}
 						g_world->units_mutex.unlock();
+						
+						// Rebroadcast
+						broadcast(packet);
+						break;*/
+					case ACTION_OUTPOST_START_BUILDING_UNIT:
+						{
+							Outpost* outpost = new Outpost();
+							::deserialize(ar, &outpost);
+							UnitType* unit_type = new UnitType();
+							::deserialize(ar, &unit_type);
+
+							// Tell the outpost to build this specific unit type
+							outpost->working_unit_type = unit_type;
+							outpost->req_goods_for_unit = unit_type->req_goods;
+							print_info("New order for building on outpost; build unit %s", unit_type->name.c_str());
+						}
+						break;
+					case ACTION_OUTPOST_START_BUILDING_BOAT:
+						{
+							Outpost* outpost = new Outpost();
+							::deserialize(ar, &outpost);
+							BoatType* boat_type = new BoatType();
+							::deserialize(ar, &boat_type);
+
+							// Tell the outpost to build this specific unit type
+							outpost->working_boat_type = boat_type;
+							outpost->req_goods_for_unit = boat_type->req_goods;
+							print_info("New order for building on outpost; build boat %s", boat_type->name.c_str());
+						}
+						break;
+					case ACTION_OUTPOST_ADD:
+						g_world->outposts_mutex.lock();
+						{
+							Outpost* outpost = new Outpost();
+							::deserialize(ar, outpost);
+							g_world->outposts.push_back(outpost);
+							print_info("New outpost of %s", outpost->owner->name.c_str());
+						}
+						g_world->outposts_mutex.unlock();
 						
 						// Rebroadcast
 						broadcast(packet);
@@ -235,9 +274,6 @@ void Server::net_loop(int id) {
 					 * it's separate from ACTION_PROVINCE_UPDATE by mere convenience for clients(?)
 					 */
 					case ACTION_PROVINCE_COLONIZE:
-						if(selected_nation == nullptr)
-							break;
-						
 						{
 							NationId colonizer_id;
 							ProvinceId province_id;
@@ -261,9 +297,6 @@ void Server::net_loop(int id) {
 						broadcast(packet);
 						break;
 					case ACTION_NATION_TAKE_DESCISION:
-						if(selected_nation == nullptr)
-							break;
-						
 						{
 							// Find event by reference name
 							std::string event_ref_name;
@@ -304,6 +337,7 @@ void Server::net_loop(int id) {
 							::deserialize(ar, &nation_id);
 							selected_nation = g_world->nations[nation_id];
 						}
+						print_info("Nation %s selected by client %zu", selected_nation->name.c_str(), (size_t)id);
 						break;
 					// Nation and province addition and removals are not allowed to be done by clients
 					default:
@@ -347,10 +381,9 @@ Client::Client(std::string host, const unsigned port) {
 	addr.sin_family = AF_INET;
 	addr.sin_addr.s_addr = inet_addr(host.c_str());
 	addr.sin_port = htons(port);
-
+	
 	fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if(fd == INVALID_SOCKET) {
-		print_error("Cannot create client socket");
 #ifdef windows
 		print_error("WSA Code: %u", WSAGetLastError());
 		WSACleanup();
@@ -359,7 +392,6 @@ Client::Client(std::string host, const unsigned port) {
 	}
 		
 	if(connect(fd, (sockaddr*)&addr, sizeof(addr)) != 0) {
-		print_error("Cannot connect to server %s:%u", host.c_str(), port);
 #ifdef unix
 		close(fd);
 #elif defined windows
@@ -380,9 +412,7 @@ Client::Client(std::string host, const unsigned port) {
  * if you need snapshots for any reason (like desyncs) you can request with ACTION_SNAPSHOT
  */
 void Client::net_loop(void) {
-	Packet packet = Packet(this->get_fd());
-	
-	print_info("Launched client thread!");
+	Packet packet = Packet(fd);
 	
 	// Receive the first snapshot of the world 
 	packet.recv();
@@ -393,27 +423,20 @@ void Client::net_loop(void) {
 	
 	has_snapshot = true;
 	
-	extern void client_update(void);
 	try {
 		enum ActionType action;
-		
-		fd_set fdset;
-		FD_ZERO(&fdset);
-		FD_SET(fd, &fdset);
-			
-		struct timeval time_out;
+		int has_pending;
+		//struct pollfd pfd;
+		//pfd.fd = fd;
+		//pfd.events = POLLIN;
+
 		while(1) {
-			int has_pending = 1;
-			
 			// Read the messages if there is any pending bytes on the tx
-			while(has_pending) {
-				//ioctl(this->get_fd(), FIONREAD, &has_pending);
-				memset(&time_out, 0, sizeof(time_out));
-				has_pending = select(fd, &fdset, NULL, NULL, &time_out);
-				if(!has_pending) {
-					break;
-				}
-				
+			//poll(&pfd, 1, -1);
+			//if(pfd.revents & POLLIN) {
+			has_pending = 0;
+			ioctl(fd, FIONREAD, &has_pending);
+			if(has_pending) {
 				// Obtain the action from the server
 				packet.recv();
 				ar.set_buffer(packet.data(), packet.size());
@@ -494,6 +517,16 @@ void Client::net_loop(void) {
 					}
 					g_world->units_mutex.unlock();
 					break;
+				case ACTION_OUTPOST_ADD:
+					g_world->outposts_mutex.lock();
+					{
+						Outpost* outpost = new Outpost();
+						::deserialize(ar, outpost);
+						g_world->outposts.push_back(outpost);
+						print_info("New outpost of %s", outpost->owner->name.c_str());
+					}
+					g_world->outposts_mutex.unlock();
+					break;
 				case ACTION_WORLD_TICK:
 					::deserialize(ar, &g_world->time);
 					break;
@@ -505,8 +538,11 @@ void Client::net_loop(void) {
 			// Client will also flush it's queue to the server
 			packet_mutex.lock();
 			while(!packet_queue.empty()) {
+				print_info("Network: sending packet");
 				Packet elem = packet_queue.front();
 				packet_queue.pop_front();
+
+				elem.fd = fd;
 				elem.send();
 			}
 			packet_mutex.unlock();

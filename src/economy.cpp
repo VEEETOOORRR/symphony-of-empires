@@ -6,6 +6,10 @@
 #include "print.hpp"
 #include "pathfinding.hpp"
 
+#include "serializer.hpp"
+#include "io_impl.hpp"
+#include "network.hpp"
+
 /**
 * Checks if the industry can produce output (if it has enough input)
  */
@@ -42,6 +46,56 @@ void Industry::add_to_stock(const World& world, const Good* good, const size_t a
 * Phase 1 of economy: Delivers & Orders are sent from all factories in the world
  */
 void Economy::do_phase_1(World& world) {
+	// Outposts who have fullfilled requirements to build stuff will spawna  lil' unit/boat
+	for(auto& outpost: world.outposts) {
+		bool can_build = true;
+		for(const auto& req: outpost->req_goods_for_unit) {
+			if(req.second) {
+				can_build = false;
+				break;
+			}
+		}
+
+		if(outpost->working_unit_type != nullptr) {
+			// Spawn a unit
+			Unit* unit = new Unit();
+			unit->x = outpost->x;
+			unit->y = outpost->y;
+			unit->type = outpost->working_unit_type;
+			unit->tx = unit->x;
+			unit->ty = unit->y;
+			unit->owner = outpost->owner;
+			unit->budget = 5000.f;
+			unit->experience = 1.f;
+			unit->morale = 1.f;
+			unit->supply = 1.f;
+			unit->defensive_ticks = 0;
+			unit->size = unit->type->max_health;
+			unit->base = unit->size;
+			
+			// Notify all clients of the server about this
+			g_world->units_mutex.lock();
+			g_world->units.push_back(unit);
+			Packet packet = Packet();
+			Archive ar = Archive();
+			enum ActionType action = ACTION_UNIT_ADD;
+			::serialize(ar, &action); // ActionInt
+			::serialize(ar, &unit); // UnitRef
+			packet.data(ar.get_buffer(), ar.size());
+			g_server->broadcast(packet);
+			g_world->units_mutex.unlock();
+
+			outpost->working_unit_type = nullptr;
+		} else if(outpost->working_boat_type != nullptr) {
+			// Spawn a boat
+			/*Boat boat;
+			boat.x = outpost->x;
+			boat.y = outpost->y;*/
+
+			outpost->working_boat_type = nullptr;
+		}
+	}
+
 	// All factories will place their orders for their inputs
 	// All RGOs will do deliver requests
 	for(auto& province: world.provinces) {
@@ -90,6 +144,7 @@ void Economy::do_phase_1(World& world) {
 				order.good = input;
 				order.industry = &industry;
 				order.province = province;
+				order.type = ORDER_INDUSTRIAL;
 				world.orders.push_back(order);
 			}
 
@@ -126,6 +181,40 @@ void Economy::do_phase_1(World& world) {
 
 			// Willing payment is made for next day ;)
 			industry.willing_payment = industry.budget / it.inputs.size() + it.outputs.size();
+		}
+	}
+
+	// Outposts working on units and boats will also request materials
+	for(const auto& outpost: world.outposts) {
+		// Building the outpost itself
+		for(const auto& good: outpost->req_goods) {
+			if(!good.second)
+				continue;
+
+			OrderGoods order;
+			order.quantity = good.second;
+			// TODO: Make this dynamic
+			order.payment = good.second * 5.f;
+			order.good = good.first;
+			order.outpost = outpost;
+			order.type = ORDER_OUTPOST_BUILD;
+			world.orders.push_back(order);
+		}
+
+		// TODO: We should deduct and set willing payment from military spendings
+		// Building the unit
+		for(const auto& good: outpost->req_goods_for_unit) {
+			if(!good.second)
+				continue;
+
+			OrderGoods order;
+			order.quantity = good.second;
+			// TODO: Make this dynamic
+			order.payment = good.second * 5.f;
+			order.good = good.first;
+			order.outpost = outpost;
+			order.type = ORDER_UNIT_BUILD;
+			world.orders.push_back(order);
 		}
 	}
 
@@ -178,7 +267,6 @@ void Economy::do_phase_2(World& world) {
 					
 					Province* order_province = order.province;
 					const Policies& order_policy = order_province->owner->current_policy;
-					Industry* order_industry = order.industry;
 
 					// If foreign trade is not allowed, then order owner === sender owner
 					if(deliver_policy.foreign_trade == false
@@ -208,7 +296,9 @@ void Economy::do_phase_2(World& world) {
 					// Orders payment should also cover the import tax and a deliver payment should also cover the export
 					// tax too. Otherwise we can't deliver
 					if(order.payment < total_order_cost && total_order_cost > 0.f) {
-						order_industry->willing_payment = total_order_cost;
+						if(order.type == ORDER_INDUSTRIAL) {
+							order.industry->willing_payment = total_order_cost;
+						}
 						continue;
 					} else if(deliver.payment < total_deliver_cost && total_deliver_cost > 0.f) {
 						deliver_industry->willing_payment = total_deliver_cost;
@@ -216,13 +306,13 @@ void Economy::do_phase_2(World& world) {
 					}
 
 					// Must have above minimum quality to be accepted
-					if(deliver.product->quality < order_industry->min_quality) {
+					if(order.type == ORDER_INDUSTRIAL && deliver.product->quality < order.industry->min_quality) {
 						continue;
 					}
 					
 					// Give both goverments their part of the tax (when tax is 1.0< then the goverment pays for it)
-					order_province->owner->budget += (order_cost* order_policy.import_tax) - order_cost;
-					deliver_province->owner->budget += (deliver_cost* deliver_policy.import_tax) - deliver_cost;
+					order_province->owner->budget += total_order_cost - order_cost;
+					deliver_province->owner->budget += total_deliver_cost - deliver_cost;
 					
 					// Province receives a small (military) supply buff from commerce
 					order_province->supply_rem += 5.f;
@@ -232,9 +322,6 @@ void Economy::do_phase_2(World& world) {
 					size_t count = std::min<size_t>(order.quantity, deliver.quantity);
 					deliver.quantity -= count;
 					order.quantity -= count;
-
-					// Duplicate products and put them into the province's stock (a commerce buff)
-					order_industry->add_to_stock(world, order.good, count);
 					
 					// Increment demand of the product, and decrement supply when the demand is fullfilled
 					deliver.product->demand += count;
@@ -244,12 +331,36 @@ void Economy::do_phase_2(World& world) {
 						deliver.product->demand += satisfied;
 					}
 
-					// Increment the production cost of this industry which is used
-					// so we sell our product at a profit instead  of at a loss
-					order_industry->production_cost += deliver.product->price;
+					if(order.type == ORDER_INDUSTRIAL) {
+						// Duplicate products and put them into the province's stock (a commerce buff)
+						order.industry->add_to_stock(world, order.good, count);
 
-					// Set quality to the max from this product
-					order_industry->min_quality = std::max(order_industry->min_quality, deliver.product->quality);
+						// Increment the production cost of this industry which is used
+						// so we sell our product at a profit instead  of at a loss
+						order.industry->production_cost += deliver.product->price;
+
+						// Set quality to the max from this product
+						order.industry->min_quality = std::max(order.industry->min_quality, deliver.product->quality);
+					} else if(order.type == ORDER_OUTPOST_BUILD) {
+						// The outpost will take the production materials
+						// and use them for building the unit
+						order.outpost->owner->budget -= total_order_cost;
+						for(auto& p: order.outpost->req_goods) {
+							if(p.first != deliver.good) {
+								continue;
+							}
+							p.second -= std::min(deliver.quantity, p.second);
+						}
+					} else if(order.type == ORDER_UNIT_BUILD) {
+						// TODO: We should deduct and set willing payment from military spendings
+						order.outpost->owner->budget -= total_order_cost;
+						for(auto& p: order.outpost->req_goods) {
+							if(p.first != deliver.good) {
+								continue;
+							}
+							p.second -= std::min(deliver.quantity, p.second);
+						}
+					}
 					
 					// Delete this deliver and order tickets from the system since
 					// they are now fullfilled (only delete when no quanity left)
