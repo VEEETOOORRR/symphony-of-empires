@@ -198,6 +198,36 @@ Province:add_nucleus(province, occitania)
 Province:add_nucleus(province, france)
 Province:give_to(province, france)
 
+province = Province:create{ ref_name = "annecy", color = 0x4e45e0 }
+province.name = _("Annecy")
+Province:register(province)
+Province:add_pop(province, artisan, french, catholic, 5000, 0.9)
+Province:add_pop(province, farmer, french, catholic, 40000, 0.8)
+Province:add_pop(province, soldier, french, catholic, 8000, 0.8)
+Province:add_pop(province, craftsmen, french, catholic, 5000, 0.9)
+Province:add_pop(province, bureaucrat, french, catholic, 5000, 0.9)
+Province:add_pop(province, aristocrat, french, catholic, 5000, 0.9)
+Province:add_pop(province, clergymen, french, catholic, 5000, 0.9)
+Province:add_pop(province, laborer, french, catholic, 50000, 0.8)
+Province:add_pop(province, entrepreneur, french, catholic, 800, 0.9)
+Province:add_nucleus(province, france)
+Province:give_to(province, france)
+
+province = Province:create{ ref_name = "chambery", color = 0xb96b20 }
+province.name = _("Chambéry")
+Province:register(province)
+Province:add_pop(province, artisan, french, catholic, 5000, 0.9)
+Province:add_pop(province, farmer, french, catholic, 40000, 0.8)
+Province:add_pop(province, soldier, french, catholic, 8000, 0.8)
+Province:add_pop(province, craftsmen, french, catholic, 5000, 0.9)
+Province:add_pop(province, bureaucrat, french, catholic, 5000, 0.9)
+Province:add_pop(province, aristocrat, french, catholic, 5000, 0.9)
+Province:add_pop(province, clergymen, french, catholic, 5000, 0.9)
+Province:add_pop(province, laborer, french, catholic, 50000, 0.8)
+Province:add_pop(province, entrepreneur, french, catholic, 800, 0.9)
+Province:add_nucleus(province, france)
+Province:give_to(province, france)
+
 province = Province:create{ ref_name = "var", color = 0xa8bcc0 }
 province.name = _("Var")
 Province:register(province)
@@ -454,8 +484,8 @@ Province:add_nucleus(province, occitania)
 Province:add_nucleus(province, france)
 Province:give_to(province, france)
 
-province = Province:create{ ref_name = "pyrenees_orientales", color = 0x4f8e40 }
-province.name = _("Pyrénées Orientales")
+province = Province:create{ ref_name = "perpignan", color = 0x4f8e40 }
+province.name = _("Perpignan")
 Province:register(province)
 Province:add_pop(province, artisan, french, catholic, 5000, 0.9)
 Province:add_pop(province, farmer, french, catholic, 40000, 0.8)
@@ -469,8 +499,8 @@ Province:add_pop(province, entrepreneur, french, catholic, 800, 0.9)
 Province:add_nucleus(province, france)
 Province:give_to(province, france)
 
-province = Province:create{ ref_name = "savoie", color = 0x4e45e0 }
-province.name = _("Savoie")
+province = Province:create{ ref_name = "pau", color = 0x402880 }
+province.name = _("Pau")
 Province:register(province)
 Province:add_pop(province, artisan, french, catholic, 5000, 0.9)
 Province:add_pop(province, farmer, french, catholic, 40000, 0.8)
@@ -484,8 +514,23 @@ Province:add_pop(province, entrepreneur, french, catholic, 800, 0.9)
 Province:add_nucleus(province, france)
 Province:give_to(province, france)
 
-province = Province:create{ ref_name = "haute_savoie", color = 0xb96b20 }
-province.name = _("Haute Savoie")
+province = Province:create{ ref_name = "landes", color = 0xc788a0 }
+province.name = _("Landes")
+Province:register(province)
+Province:add_pop(province, artisan, french, catholic, 5000, 0.9)
+Province:add_pop(province, farmer, french, catholic, 40000, 0.8)
+Province:add_pop(province, soldier, french, catholic, 8000, 0.8)
+Province:add_pop(province, craftsmen, french, catholic, 5000, 0.9)
+Province:add_pop(province, bureaucrat, french, catholic, 5000, 0.9)
+Province:add_pop(province, aristocrat, french, catholic, 5000, 0.9)
+Province:add_pop(province, clergymen, french, catholic, 5000, 0.9)
+Province:add_pop(province, laborer, french, catholic, 50000, 0.8)
+Province:add_pop(province, entrepreneur, french, catholic, 800, 0.9)
+Province:add_nucleus(province, france)
+Province:give_to(province, france)
+
+province = Province:create{ ref_name = "bordeaux", color = 0xc788a0 }
+province.name = _("Bordeaux")
 Province:register(province)
 Province:add_pop(province, artisan, french, catholic, 5000, 0.9)
 Province:add_pop(province, farmer, french, catholic, 40000, 0.8)
